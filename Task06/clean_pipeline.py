@@ -1,8 +1,8 @@
 """Acquire, clean, store, query and chart the sample air-quality data."""
 import csv
 import sqlite3
+from datetime import date
 from pathlib import Path
-from statistics import mean
 
 BASE = Path(__file__).parent
 DATA_FILE = BASE / "data" / "raw_readings.csv"
@@ -35,6 +35,16 @@ def clean_temperature(text, unit):
     return round(value, 2)
 
 
+def has_bad_text_or_range(text, low, high):
+    if text is None or text.strip() == "" or text.strip().upper() == "NA":
+        return False
+    try:
+        value = float(text)
+    except ValueError:
+        return True
+    return value < low or value > high
+
+
 def load_clean():
     cleaned = []
     errors = []
@@ -52,13 +62,19 @@ def load_clean():
             station = (row["station"] or "").strip().title()
             day = (row["date"] or "").strip()
             try:
-                hour = int(row["hour"])
-            except (TypeError, ValueError):
-                errors.append((line_number, "invalid hour"))
+                date.fromisoformat(day)
+            except ValueError:
+                errors.append((line_number, "invalid date; row skipped"))
                 continue
 
-            if not station or not day or hour < 0 or hour > 23:
-                errors.append((line_number, "missing station/date or invalid hour"))
+            try:
+                hour = int(row["hour"])
+            except (TypeError, ValueError):
+                errors.append((line_number, "invalid hour; row skipped"))
+                continue
+
+            if not station or hour < 0 or hour > 23:
+                errors.append((line_number, "missing station or invalid hour; row skipped"))
                 continue
 
             pm25 = clean_number(row["pm25"], 0, 999)
@@ -76,6 +92,22 @@ def load_clean():
             no2 = clean_number(row["no2"], 0, 1000)
             unit = TEMP_UNITS.get(station, "C")
             temp_c = clean_temperature(row["temperature"], unit)
+
+            for field, text, low, high in (
+                ("PM10", row["pm10"], 0, 2000),
+                ("NO2", row["no2"], 0, 1000),
+                ("temperature", row["temperature"], -100, 250)
+            ):
+                if has_bad_text_or_range(text, low, high):
+                    errors.append((line_number, f"invalid {field}; stored as NULL"))
+
+            if pm10 is None and (row["pm10"] or "").strip() == "":
+                errors.append((line_number, "missing PM10; stored as NULL"))
+            if no2 is None and (row["no2"] or "").strip() == "":
+                errors.append((line_number, "missing NO2; stored as NULL"))
+            if temp_c is None and (row["temperature"] or "").strip() == "":
+                errors.append((line_number, "missing temperature; stored as NULL"))
+
             cleaned.append((station, day, hour, pm25, pm10, no2, temp_c))
 
     return raw_count, cleaned, errors
@@ -115,14 +147,11 @@ def store_sqlite(rows):
     station_ids = dict(connection.execute(
         "SELECT station_name, station_id FROM stations"
     ).fetchall())
-
     values = [
         (station_ids[station], day, hour, pm25, pm10, no2, temp)
         for station, day, hour, pm25, pm10, no2, temp in rows
     ]
-    connection.executemany(
-        "INSERT INTO readings VALUES (?, ?, ?, ?, ?, ?, ?)", values
-    )
+    connection.executemany("INSERT INTO readings VALUES (?, ?, ?, ?, ?, ?, ?)", values)
     connection.execute("CREATE INDEX idx_station_day ON readings(station_id, day)")
     connection.commit()
     return connection
@@ -168,10 +197,9 @@ def make_charts(connection):
         plt.savefig(CHARTS / "station_comparison.png")
         plt.close()
 
-    pairs = connection.execute("""
-        SELECT temperature_c, pm25 FROM readings
-        WHERE temperature_c IS NOT NULL
-    """).fetchall()
+    pairs = connection.execute(
+        "SELECT temperature_c, pm25 FROM readings WHERE temperature_c IS NOT NULL"
+    ).fetchall()
     if pairs:
         plt.figure()
         plt.scatter([r[0] for r in pairs], [r[1] for r in pairs])
@@ -182,9 +210,9 @@ def make_charts(connection):
         plt.savefig(CHARTS / "temperature_vs_pm25.png")
         plt.close()
 
-    hours = connection.execute("""
-        SELECT hour, AVG(pm25) FROM readings GROUP BY hour ORDER BY hour
-    """).fetchall()
+    hours = connection.execute(
+        "SELECT hour, AVG(pm25) FROM readings GROUP BY hour ORDER BY hour"
+    ).fetchall()
     if hours:
         plt.figure()
         plt.bar([r[0] for r in hours], [r[1] for r in hours])
@@ -201,13 +229,12 @@ def main():
     raw_count, rows, errors = load_clean()
     print("Raw rows:", raw_count)
     print("Clean rows:", len(rows))
-    print("Rejected rows or duplicate records:", len(errors))
+    print("Rejected, corrected or duplicate records:", len(errors))
 
     with open(OUTPUT / "cleaned_readings.csv", "w", encoding="utf-8", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(["station", "date", "hour", "pm25", "pm10", "no2", "temperature_c"])
         writer.writerows(rows)
-
     with open(OUTPUT / "errors.log", "w", encoding="utf-8") as file:
         for line_number, message in errors:
             file.write(f"Line {line_number}: {message}\n")
