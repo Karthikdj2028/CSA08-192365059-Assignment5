@@ -5,22 +5,24 @@ from statistics import mean, median, pstdev
 def read_number(value):
     text = str(value).strip()
     if text == "" or text.upper() == "NA":
-        return None
+        return None, "missing"
     try:
         number = float(text)
     except ValueError:
-        return None
+        return None, "invalid"
     if number < 0 or number > 999:
-        return None
-    return number
+        return None, "invalid"
+    return number, "valid"
 
 
-def fill_missing_with_median(values):
-    valid = [value for value in values if value is not None]
+def fill_missing_with_median(parsed):
+    valid = [value for value, status in parsed if status == "valid"]
     if not valid:
-        return values
+        return [None for value, status in parsed]
     middle = median(valid)
-    return [middle if value is None else value for value in values]
+    # Only missing values are filled. Impossible values stay None.
+    return [middle if status == "missing" else value
+            for value, status in parsed]
 
 
 def to_celsius(value, unit):
@@ -49,12 +51,15 @@ def z_score(values):
 
 if __name__ == "__main__":
     raw = ["48", "NA", "", "95", "-5", "121", "1500"]
-    cleaned = [read_number(value) for value in raw]
-    filled = fill_missing_with_median(cleaned)
+    parsed = [read_number(value) for value in raw]
+    filled = fill_missing_with_median(parsed)
+    valid_values = [value for value in filled if value is not None]
+
     print("Raw PM2.5:", raw)
-    print("Clean values (invalid/missing -> None):", cleaned)
-    print("Median-filled values:", filled)
-    print("Min-max:", min_max(filled))
-    print("Z-score:", z_score(filled))
+    print("Parsed values and status:", parsed)
+    print("After missing-value median fill:", filled)
+    print("Invalid sensor faults remain None.")
+    print("Min-max:", min_max(valid_values))
+    print("Z-score:", z_score(valid_values))
     print("86 F in Celsius:", to_celsius(86, "F"))
     print("Station name:", "  adyar ".strip().title())
