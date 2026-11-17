@@ -1,0 +1,7 @@
+Line 3: missing or impossible PM2.5; row skipped
+Line 4: missing or impossible PM2.5; row skipped
+Line 6: duplicate station/date/hour; later row skipped
+Line 7: invalid PM10; stored as NULL
+Line 10: missing or impossible PM2.5; row skipped
+Line 11: missing station or invalid hour; row skipped
+Line 12: invalid date; row skipped
